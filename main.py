@@ -25,6 +25,8 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 # ==========================================
 google_creds_raw = os.environ.get("GOOGLE_CREDENTIALS_JSON")
 
+print("ENV VALUE:", repr(google_creds_raw)) #DEBUG
+
 if not google_creds_raw:
     raise Exception("GOOGLE_CREDENTIALS_JSON env not found")
 
@@ -1190,4 +1192,5 @@ def edit_category():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+
 

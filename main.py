@@ -21,22 +21,16 @@ if not os.path.exists(UPLOAD_FOLDER): os.makedirs(UPLOAD_FOLDER)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
 # ==========================================
-# ⚠ KUNCI RAHASIA GOOGLE (CREDENTIALS) ⚠
+# GOOGLE CREDENTIALS VIA ENVIRONMENT VARIABLE
 # ==========================================
-# HAPUS TULISAN DI BAWAH, PASTE ISI FILE JSON KAMU DI DALAM KURUNG KURAWAL {}
-GOOGLE_CREDENTIALS = {
-  "type": "service_account",
-  "project_id": "cashflow-486019",
-  "private_key_id": "b6ee5dd5a33be576baf1df39262fa2d0a4714524",
-  "private_key": "-----BEGIN PRIVATE KEY-----\nMIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQCbr5tD4/i3umZp\n2HOrxoDrRG0MuJxJ/S1RzQeV2yyRLl9TGnKxW0Ztr5M86NE1z+Wyszo8eWO8KQmw\n0h6DTVVW7shOKhKeUo0HEZVHIx9//W6LvvzoR+Ns1iqpuQi8tyvoAqPGQhkc+uVB\nLGJTb02TDoiemUdb9HqHVIIkuaFyqL80l7CZUlZ+ilP23Q9ZRPdGbLEH+Lxat4zI\n70VKZ2zgydVMfX8MCh+Q1O6O9cOwvomRt0dPozw2ikyl5TPbT0wxMCaMMJlqKzM5\npYR8P0Fk38g1DhTzH9gUoUnRuIetTa0V6ah+FvCV+TaOFkkOkYztm6sqt4pw7lOU\nbKvPPB5LAgMBAAECggEABD3y/AExGipQWZhsFJQdcK4YdkH3AXAryy4HITDJUe5y\nnAOueFeULkzq3G2K8NnNdh3ONriJ3Iif372rJaGny+00vnUYjbKSbq9V9rNSJD+2\nJRQE0t7Np2pKKq8/12NJYFw1vsqPziZ+tKNwzX65MQBtwrIPtbHdBDPiCv3SAMxb\n2ZITq4nZuSGkwUKOyl2nKONrIINCLsfRt7nw+W+HmofBP6JkFT+NTxw12E8vmwJA\nSTf/0+6ADeR9kbjazoA1NtXqAy4NR+7waxX+3xR8OxuAm3OMUwFbpIwlPdeYPyvr\n4jVMvdvXPFFn5AiTCxDNK/Q9kZSriG4cJv32MALgkQKBgQDNePBddIViH8GmIwwi\nws6WYNpB3fmj4DMV9uZZWQ64RK2+reRixZn1lzyjwUiIyq91XFl8P1lzHDOf8QcN\nWB1Vo4zThTAwaLTr4EuI/xlrndbKYKyh1mVhjT/YqXe6xO9/LYlgRyujwTzYC89B\nnWnOKHC3zh2FcgTRb8HrqcyF/wKBgQDB+Hi4Qgbj7iuXxkjEckWMk9xzaJnv2LHf\nGTw7oYVfpI+PMnd+eXuvcvhLvlUhQ54UIUyHKgY1hCv2vSqFAMn9Tp4bnv/9wEzU\nb3rq5zeqpqEmeUpjueukdlcElDpelfGf322k28/cQhsoEVR2A7cd9uCUymeSrY5Q\nHg5W1ZiftQKBgHasj0eq8Q8HgHVQcMXy9hbswaKhbno0F81r2Qdp5JKRODiVfv99\nWbr7Ks7558b6KfUC7bxRanyNoVOThpsydV7tI31Xw8lx8Gz8EySBElGRzGj/BTZD\n+jIpvuKIntqEvD8cMeglsxLVnSq7R22CWYX03YWLyok0nYvJnJtcawBJAoGAQMRx\nsrzBRjxRrAUWaRnq5Sy+EH8d33tQsTjg5txhB3WQRfVI9x8jUIsoI0pzbH8CeqA/\nyGYc2qO+dk3ls7F2wLEOlBR8T8N1I/3xYhxAdyfaaVlYoIIFD84/8hR4hPq2Sna1\nSrXm6xnbrX5T4HAPJd84UBZhjRWMjm3qxc3ef30CgYAuhWE31TSP2J0agulJWUQV\nvjqdkcnDI1dSDQCfXE9sk6qWGnqdUuJTvAwKE7QpJiEVMBh5JEaP5agkEUDg/Ega\n1ghN8FKCZE5u9oloHI9IAz5/M5EwQP8MdC45LN+Uy2gfVfQ0UhuthVT5IlEUWr9H\nuQyGQ5pj/fzqn+fs5pLBuw==\n-----END PRIVATE KEY-----\n",
-  "client_email": "bot-cashflow@cashflow-486019.iam.gserviceaccount.com",
-  "client_id": "102915052981108610928",
-  "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-  "token_uri": "https://oauth2.googleapis.com/token",
-  "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-  "client_x509_cert_url": "https://www.googleapis.com/robot/v1/metadata/x509/bot-cashflow%40cashflow-486019.iam.gserviceaccount.com",
-  "universe_domain": "googleapis.com"
-}
+google_creds_raw = os.environ.get("GOOGLE_CREDENTIALS_JSON")
+
+if not google_creds_raw:
+    raise Exception("GOOGLE_CREDENTIALS_JSON env not found")
+
+GOOGLE_CREDENTIALS = json.loads(google_creds_raw)
+
+
 
 
 # Nama Google Sheet
@@ -1196,3 +1190,4 @@ def edit_category():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+

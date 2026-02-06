@@ -1,7 +1,5 @@
 import os
 import json
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
 from flask import Flask, render_template_string, request, redirect, url_for, session, flash, send_from_directory
 from werkzeug.utils import secure_filename
 import random
@@ -14,12 +12,17 @@ app = Flask(__name__)
 app.secret_key = 'super_secret_key_meow_sheets_final_v12'
 app.permanent_session_lifetime = timedelta(days=1)
 
+@app.route('/ping')
+def ping():
+    return "OK"
+
 # --- PATH MANUAL ---
 basedir = os.path.abspath(os.path.dirname(__file__))
 UPLOAD_FOLDER = os.path.join(basedir, 'uploads')
 if not os.path.exists(UPLOAD_FOLDER): os.makedirs(UPLOAD_FOLDER)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
+from db import get_db_connection
 
 # ==========================================
 # GOOGLE SHEETS CONFIG
@@ -27,123 +30,53 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 SHEET_NAME = "CashflowDB"
 GOOGLE_CREDS_PATH = "/var/www/cashflow/credentials.json"
 
-# ==========================================
-# KONEKSI GOOGLE SHEETS
-# ==========================================
-def get_db_connection():
-    try:
-        scope = [
-            'https://spreadsheets.google.com/feeds',
-            'https://www.googleapis.com/auth/drive'
-        ]
+def fetch_all_data_mysql():
+    db_conn = get_db_connection()
+    cursor = db_conn.cursor(dictionary=True)
 
-        creds = ServiceAccountCredentials.from_json_keyfile_name(
-            GOOGLE_CREDS_PATH,
-            scope
-        )
+    cursor.execute("""
+        SELECT
+            id,
+            date,
+            category,
+            description AS `desc`,
+            amount,
+            type,
+            usage_type AS `usage`,
+            created_by AS `by`
+        FROM transactions
+        ORDER BY date DESC, id DESC
+    """)
 
-        client = gspread.authorize(creds)
-        sheet = client.open(SHEET_NAME).sheet1
-        return sheet
+    rows = cursor.fetchall()
 
-    except Exception as e:
-        print(f"Error Connect Sheet: {e}")
-        return None
+    cursor.close()
+    db_conn.close()
 
+    transactions = []
+    for r in rows:
+        transactions.append({
+            "id": r["id"],
+            "date": r["date"].strftime("%Y-%m-%d") if r["date"] else "",
+            "category": r["category"],
+            "desc": r["desc"],
+            "amount": float(r["amount"]) if r["amount"] else 0,
+            "type": r["type"],
+            "usage": r["usage"],
+            "by": r["by"]
+        })
 
-def get_settings():
-    conn = get_db_connection()
-    # Ganti 'Settings' dengan nama tab yang kamu buat
-    try:
-        sheet_settings = conn.spreadsheet.worksheet('Settings')
-        records = sheet_settings.get_all_records()
-        # Mengubah list records menjadi dictionary agar mudah diakses
-        return {r['key']: r['value'] for r in records}
-    except:
-        return {}
-
-def update_setting(key_name, value):
-    conn = get_db_connection()
-    try:
-        sheet_settings = conn.spreadsheet.worksheet('Settings')
-        # Ambil semua data di kolom A (Key)
-        keys = sheet_settings.col_values(1)
-        if key_name in keys:
-            row_idx = keys.index(key_name) + 1
-            sheet_settings.update_cell(row_idx, 2, value)
-            return True
-        else:
-            # Jika key belum ada, tambah baris baru
-            sheet_settings.append_row([key_name, value])
-            return True
-    except Exception as e:
-        print(f"Update Setting Error: {e}")
-        return False
-
-def fetch_all_data():
-    sheet = get_db_connection()
-    if not sheet: return []
-    try:
-        records = sheet.get_all_records()
-        fixed = []
-
-        for i, r in enumerate(records, start=2):  # start=2 karena row 1 header
-            raw_date = r.get('date')
-            d = None
-
-            # ... (logika pengecekan raw_date yang sudah ada) ...
-            if isinstance(raw_date, datetime):
-                d = raw_date
-            elif isinstance(raw_date, str):
-                raw = raw_date.strip()
-                for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%Y/%m/%d", "%d-%m-%Y"):
-                    try:
-                        d = datetime.strptime(raw, fmt)
-                        break
-                    except: continue
-            elif isinstance(raw_date, (int, float)):
-                d = datetime(1899, 12, 30) + timedelta(days=float(raw_date))
-
-            if not d:
-                continue
-
-            # 🔥 PERBAIKAN PENGAMAN ANGKA:
-            r['category'] = str(r.get('category', '📝 Lainnya'))
-            r['desc'] = str(r.get('desc', '-'))
-
-            # Ambil data amount asli
-            raw_amt = r.get('amount', 0)
-            if isinstance(raw_amt, str):
-                # Hanya hapus titik jika dia teks (string)
-                clean_amt = raw_amt.replace('.', '').replace(',', '.')
-                r['amount'] = float(clean_amt if clean_amt else 0)
-            else:
-                # Jika sudah angka, langsung jadikan float tanpa ganggu digitnya
-                r['amount'] = float(raw_amt)
-
-            r['date'] = d.strftime("%Y-%m-%d")
-            r['_dt'] = d
-            r['_row'] = i
-            fixed.append(r)
-
-        fixed.sort(key=lambda x: x.get('_dt', datetime.min), reverse=True)
-        return fixed
-
-    except Exception as e:
-        print(f"Error Fetching: {e}")
-        return []
+    return transactions
 
 
-#===========
-def generate_available_months(data):
+
+def generate_available_months_mysql(data):
     months = set()
     for t in data:
-        dt = t.get('_dt')
-        if dt:
-            months.add(dt.strftime("%Y-%m"))  # YYYY-MM
-
-    return sorted(list(months), reverse=True)
-
+        d = t.get("date")
+        if d and len(d) >= 7:
+            months.add(d[:7])  # YYYY-MM
+    return sorted(months, reverse=True)
 
 
 # ==========================================
@@ -165,55 +98,50 @@ def parse_date(date_str):
     except:
         return None
 
-def filter_transactions(data_list, filter_type, s_date=None, e_date=None, month=None):
-    res = []
-    # --- TAMBAHKAN +8 JAM UNTUK WITA ---
-    now_wita = datetime.utcnow() + timedelta(hours=8)
-    today = now_wita.date()
-    yesterday = today - timedelta(days=1)
-    # -----------------------------------
+from datetime import datetime, timedelta
 
-    for t in data_list:
-        dt = t.get('_dt')
-        if not dt:
+def filter_transactions(transactions, ftype, start_date=None, end_date=None, month=None):
+    # ==========================
+    # TODAY STRING (GMT+8 KONSISTEN DENGAN INSERT)
+    # ==========================
+    today = (datetime.utcnow() + timedelta(hours=8)).strftime("%Y-%m-%d")
+    yesterday = (datetime.utcnow() + timedelta(hours=8) - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    filtered = []
+
+    for t in transactions:
+        t_date = t.get('date')  # STRING: YYYY-MM-DD
+
+        if not t_date:
             continue
 
-        d = dt.date()
+        # ==========================
+        # FILTER LOGIC (STRING-BASED)
+        # ==========================
+        if ftype == 'today':
+            if t_date == today:
+                filtered.append(t)
 
-        if filter_type == 'today':
-            if d == today:
-                res.append(t)
+        elif ftype == 'yesterday':
+            if t_date == yesterday:
+                filtered.append(t)
 
-        elif filter_type == 'yesterday':
-            if d == yesterday:
-                res.append(t)
+        elif ftype == 'single' and start_date:
+            if t_date == start_date:
+                filtered.append(t)
 
-        elif filter_type == 'month' and month:
-            # month format: YYYY-MM
-            if dt.strftime("%Y-%m") == month:
-                res.append(t)
+        elif ftype == 'range' and start_date and end_date:
+            if start_date <= t_date <= end_date:
+                filtered.append(t)
 
-        elif filter_type == 'range' and s_date and e_date:
-            try:
-                sd = datetime.strptime(s_date, "%Y-%m-%d").date()
-                ed = datetime.strptime(e_date, "%Y-%m-%d").date()
-                if sd <= d <= ed:
-                    res.append(t)
-            except:
-                pass
+        elif ftype == 'month' and month:
+            if t_date.startswith(month):  # contoh: 2026-02
+                filtered.append(t)
 
-        elif filter_type == 'single' and s_date:
-            try:
-                sd = datetime.strptime(s_date, "%Y-%m-%d").date()
-                if d == sd:
-                    res.append(t)
-            except:
-                pass
+        elif ftype == 'all':
+            filtered.append(t)
 
-        elif filter_type == 'all':
-            res.append(t)
-
-    return res
+    return filtered
 
 
 
@@ -813,123 +741,122 @@ HTML_TEMPLATE = """
 """
 
 # ==========================================
-# BACKEND ROUTES
+# BACKEND ROUTES (MYSQL VERSION)
 # ==========================================
-@app.route('/uploads/<filename>')
-def uploaded_file(filename): return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
-@app.route('/login', methods=['POST', 'GET'])
+
+from flask import (
+    request, redirect, session, flash,
+    render_template_string, send_from_directory
+)
+from datetime import datetime, timedelta
+from werkzeug.utils import secure_filename
+import os
+import random
+
+from db import get_db_connection
+
+
+# ==========================
+# UPLOADS
+# ==========================
+@app.route('/uploads/<filename>')
+def uploaded_file(filename):
+    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+
+
+# ==========================
+# AUTH
+# ==========================
+@app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
         username = request.form.get('username')
         pin = request.form.get('pin')
-        found_user = None
-        for key, val in USERS.items():
-            if val['username'] == username:
-                found_user = (key, val)
-                break
-        if not found_user: return render_template_string(HTML_TEMPLATE, page='login', error="Username tidak ditemukan!")
-        key, user_data = found_user
-        if user_data['pin'] != pin: return render_template_string(HTML_TEMPLATE, page='login', error="PIN Salah! Coba lagi.")
-        session.permanent = True
-        session['user_key'] = key
-        flash(f"Selamat datang, {user_data['name']}!", "success")
-        return redirect('/')
+
+        for key, user in USERS.items():
+            if user['username'] == username:
+                if user['pin'] != pin:
+                    return render_template_string(
+                        HTML_TEMPLATE, page='login',
+                        error="PIN salah"
+                    )
+                session['user_key'] = key
+                flash(f"Selamat datang, {user['name']}!", "success")
+                return redirect('/')
+        return render_template_string(
+            HTML_TEMPLATE, page='login',
+            error="Username tidak ditemukan"
+        )
+
     return render_template_string(HTML_TEMPLATE, page='login')
-
-@app.route('/edit_transaction', methods=['POST'])
-def edit_transaction():
-    if 'user_key' not in session:
-        return redirect('/login')
-
-    sheet = get_db_connection()
-    if not sheet:
-        flash("Gagal koneksi ke database", "error")
-        return redirect('/data')
-
-    row = int(request.form.get('id'))   # row sheet
-    amount = request.form.get('amount').replace('.', '')
-    desc = request.form.get('desc')
-    category = request.form.get('category')
-    ttype = request.form.get('type')
-    usage = request.form.get('usage')
-    editor = USERS[session['user_key']]['name']  # 🔥 nama pengedit
-
-    try:
-        # Kolom asumsi:
-        # A = date
-        # B = type
-        # C = amount
-        # D = category
-        # E = usage
-        # F = desc
-        # G = by
-
-        sheet.update_cell(row, 3, category)     # category
-        sheet.update_cell(row, 4, desc)   # desc
-        sheet.update_cell(row, 5, amount)      # amount
-        sheet.update_cell(row, 6, usage)       # usage
-        sheet.update_cell(row, 7, editor)     # by (🔥 pengedit)
-
-        flash("Data berhasil diedit", "success")
-    except Exception as e:
-        print("EDIT ERROR:", e)
-        flash("Gagal edit data", "error")
-
-    return redirect('/data')
 
 
 @app.route('/logout')
 def logout():
-    session.pop('user_key', None)
+    session.clear()
     return redirect('/login')
 
+
+# ==========================
+# HOME
+# ==========================
 @app.route('/')
 def home():
-    if 'user_key' not in session: return redirect('/login')
+    if 'user_key' not in session:
+        return redirect('/login')
 
-    user_key = session['user_key']
-    live_data = get_settings() # 👈 Ambil data terbaru dari Cloud
-    user = USERS[user_key]
+    user = USERS[session['user_key']]
 
-    # Update data user sementara dengan data dari Sheets
-    user['name'] = live_data.get(f"{user_key}_name", user['name'])
-    user['avatar_file'] = live_data.get(f"{user_key}_avatar", user['avatar_file'])
+    conn = get_db_connection()
+    cur = conn.cursor(dictionary=True)
 
-    transactions = fetch_all_data()
+    cur.execute("SELECT * FROM transactions ORDER BY date DESC, id DESC")
+    transactions = cur.fetchall()
+
+    cur.close()
+    conn.close()
+
     today = (datetime.utcnow() + timedelta(hours=8)).strftime("%Y-%m-%d")
-    daily_stats = [t for t in transactions if t['date'] == today]
-    total_bal, _, _, _, _ = calculate_stats(transactions)
-    _, d_in, d_out, _, _ = calculate_stats(daily_stats)
+    daily = [t for t in transactions if str(t['date']) == today]
 
-    return render_template_string(HTML_TEMPLATE,
+    total_bal, _, _, _, _ = calculate_stats(transactions)
+    _, d_in, d_out, _, _ = calculate_stats(daily)
+
+    return render_template_string(
+        HTML_TEMPLATE,
         page='home',
-        user=user, # 👈 Sekarang user sudah membawa info foto terbaru
+        user=user,
+        transactions=transactions,
         balance_str=f"Rp {total_bal:,.0f}".replace(',', '.'),
         in_str=f"Rp {d_in:,.0f}".replace(',', '.'),
-        out_str=f"Rp {d_out:,.0f}".replace(',', '.'),
-        transactions=transactions)
+        out_str=f"Rp {d_out:,.0f}".replace(',', '.')
+    )
+
+
+# ==========================
+# DATA PAGE + STATS
+# ==========================
+
 @app.route('/stats')
 def stats():
     if 'user_key' not in session:
         return redirect('/login')
 
-    transactions = fetch_all_data()
-    available_months = generate_available_months(transactions)
+    transactions = fetch_all_data_mysql()
+
+    available_months = generate_available_months_mysql(transactions)
 
     ftype = request.args.get('filter')
     s_date = request.args.get('start_date')
     e_date = request.args.get('end_date')
     month = request.args.get('month')
 
-    # AUTO DETECT FILTER
     if ftype is None:
         if month:
             ftype = 'month'
         elif s_date and e_date:
             ftype = 'range'
-        elif s_date and not e_date:
-            ftype = 'single'
         else:
             ftype = 'today'
 
@@ -937,37 +864,11 @@ def stats():
 
     _, tin, tout, p, b = calculate_stats(filtered)
 
-    # ==========================
-    # LABEL HUMAN READABLE
-    # ==========================
-    if ftype == 'month' and month:
-        try:
-            y, m = month.split('-')
-            bulan_map = ["Januari","Februari","Maret","April","Mei","Juni","Juli","Agustus","September","Oktober","November","Desember"]
-            filter_label = f"{bulan_map[int(m)-1]} {y}"
-        except:
-            filter_label = month
-
-    elif ftype == 'range' and s_date and e_date:
-        filter_label = f"{s_date} s/d {e_date}"
-
-    elif ftype == 'single' and s_date:
-        filter_label = s_date
-
-    elif ftype == 'today':
-        filter_label = "Hari Ini"
-
-    elif ftype == 'yesterday':
-        filter_label = "Kemarin"
-
-    else:
-        filter_label = "Semua Data"
-
     return render_template_string(
         HTML_TEMPLATE,
-        available_months=available_months,
         page='stats',
         user=USERS[session['user_key']],
+        available_months=available_months,
         filter_active=ftype,
         in_str=f"Rp {tin:,.0f}".replace(',', '.'),
         out_str=f"Rp {tout:,.0f}".replace(',', '.'),
@@ -976,16 +877,18 @@ def stats():
         month_selected=month,
         start_date=s_date,
         end_date=e_date,
-        filter_label=filter_label
+        filter_label="Hari Ini" if ftype == "today" else ""
     )
-
 
 
 @app.route('/data')
 def data_page():
-    if 'user_key' not in session: return redirect('/login')
-    transactions = fetch_all_data()
-    available_months = generate_available_months(transactions)
+    if 'user_key' not in session:
+        return redirect('/login')
+
+    transactions = fetch_all_data_mysql()
+
+    available_months = generate_available_months_mysql(transactions)
 
     ftype = request.args.get('filter', 'today')
     s_date = request.args.get('start_date')
@@ -995,199 +898,229 @@ def data_page():
     filtered = filter_transactions(transactions, ftype, s_date, e_date, month)
 
     return render_template_string(
-    HTML_TEMPLATE,
-    available_months=available_months,
-    page='data',
-    user=USERS[session['user_key']],
-    transactions=filtered,
-    filter_active=ftype,
-    month_selected=month,
-    start_date=s_date,
-    end_date=e_date
+        HTML_TEMPLATE,
+        page='data',
+        user=USERS[session['user_key']],
+        transactions=filtered,
+        available_months=available_months,
+        filter_active=ftype,
+        month_selected=month,
+        start_date=s_date,
+        end_date=e_date
     )
 
 
+# ==========================
+# ADD TRANSACTION
+# ==========================
 @app.route('/add', methods=['POST'])
-def add():
-    if 'user_key' not in session: return redirect('/login')
-    sheet = get_db_connection()
-    if not sheet:
-        flash("Gagal connect ke Google Sheet!", "error")
+def add_transaction():
+    if 'user_key' not in session:
+        return redirect('/login')
+
+    # ==========================
+    # AMOUNT (VALIDASI)
+    # ==========================
+    raw_amt = request.form.get('amount')
+    if not raw_amt:
+        flash("Nominal tidak boleh kosong", "error")
         return redirect('/')
 
-    amt = request.form.get('amount')
-    type_ = request.form.get('type')
+    try:
+        amt = int(raw_amt.replace('.', '').replace(',', ''))
+    except ValueError:
+        flash("Format nominal tidak valid", "error")
+        return redirect('/')
 
-    # LOGIC AUTO INCOME
+    # ==========================
+    # TYPE & CATEGORY
+    # ==========================
+    type_ = request.form.get('type')
+    if type_ not in ('in', 'out'):
+        flash("Tipe transaksi tidak valid", "error")
+        return redirect('/')
+
     category = "✨ Income" if type_ == 'in' else request.form.get('category')
     usage = "bisnis" if type_ == 'in' else request.form.get('usage')
 
-    if amt:
-        new_row = [
-            random.randint(10000,99999), # ID Unik
-            datetime.now().strftime("%Y-%m-%d"),
-            category,
-            request.form.get('desc'),
-            int(amt.replace('.', '')),
-            type_,
-            usage,
-            USERS[session['user_key']]['name']
-        ]
-        try:
-            # Insert row 2 (after header)
-            sheet.insert_row(new_row, 2)
-            flash("Data berhasil disimpan ke Google Sheet!", "success")
-        except Exception as e:
-            flash(f"Error Saving: {e}", "error")
+    # ==========================
+    # DATE (KONSISTEN GMT+8)
+    # ==========================
+    date_str = (datetime.utcnow() + timedelta(hours=8)).strftime("%Y-%m-%d")
 
+    # ==========================
+    # INSERT MYSQL
+    # ==========================
+    conn = get_db_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        INSERT INTO transactions
+        (date, category, description, amount, type, usage_type, created_by)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+    """, (
+        date_str,
+        category,
+        request.form.get('desc'),
+        amt,
+        type_,
+        usage,
+        USERS[session['user_key']]['name']
+    ))
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    flash("Data berhasil disimpan", "success")
     return redirect('/')
 
+
+# ==========================
+# DELETE TRANSACTION
+# ==========================
 @app.route('/delete/<int:tid>')
 def delete_transaction(tid):
-    if 'user_key' not in session: return redirect('/login')
-    sheet = get_db_connection()
-    try:
-        cell = sheet.find(str(tid), in_column=1)
-        if cell:
-            sheet.delete_rows(cell.row)
-            flash("Data dihapus dari Sheet.", "success")
-    except Exception as e:
-        flash(f"Gagal Hapus: {e}", "error")
+    if 'user_key' not in session:
+        return redirect('/login')
+
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM transactions WHERE id = %s", (tid,))
+    conn.commit()
+
+    cur.close()
+    conn.close()
+
+    flash("Data berhasil dihapus", "success")
     return redirect('/data')
 
-# Settings & Category routes (Local only for simplification)
+
+# ==========================
+# SETTINGS
+# ==========================
 @app.route('/settings')
 def settings():
-    if 'user_key' not in session: return redirect('/login')
+    if 'user_key' not in session:
+        return redirect('/login')
 
-    user_key = session['user_key']
-    live_data = get_settings() # Mengambil data dari tab 'Settings'
-    user = USERS[user_key]
+    user = USERS[session['user_key']]
 
-    # Ambil data dari Sheets untuk menimpa data sementara di USERS
-    user['name'] = live_data.get(f"{user_key}_name", user['name'])
-    user['avatar_file'] = live_data.get(f"{user_key}_avatar", user['avatar_file'])
+    conn = get_db_connection()
+    cur = conn.cursor(dictionary=True)
 
-    # Sinkronisasi Kategori
-    cat_string = live_data.get(f"{user_key}_categories")
-    if cat_string:
-        # Mengubah string "Makan, Belanja" menjadi list ['Makan', 'Belanja']
-        user['categories'] = [c.strip() for c in cat_string.split(',') if c.strip()]
+    cur.execute("SELECT name FROM categories ORDER BY name")
+    cats = [c['name'] for c in cur.fetchall()]
+    user['categories'] = cats
 
-    return render_template_string(HTML_TEMPLATE, page='settings', user=user)
+    cur.close()
+    conn.close()
 
+    return render_template_string(
+        HTML_TEMPLATE,
+        page='settings',
+        user=user
+    )
+
+
+# ==========================
+# CATEGORY CRUD
+# ==========================
 @app.route('/add_category', methods=['POST'])
 def add_category():
-    if 'user_key' not in session: return redirect('/login')
-    user_key = session['user_key']
-    new_cat = request.form.get('new_category')
+    if 'user_key' not in session:
+        return redirect('/login')
 
-    if new_cat:
-        live_data = get_settings()
-        # 🔥 Gunakan user_key agar spesifik (misal: silviapasya_categories)
-        key_name = f"{user_key}_categories"
-        existing_cats = live_data.get(key_name, "")
-
-        # Gabungkan kategori lama dengan yang baru
-        updated_cats = f"{existing_cats}, {new_cat}" if existing_cats else new_cat
-
-        # Simpan string baru ke Sheets
-        update_setting(key_name, updated_cats)
-        flash(f"Kategori {new_cat} berhasil ditambah!", "success")
+    name = request.form.get('new_category')
+    if name:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("INSERT IGNORE INTO categories (name) VALUES (%s)", (name,))
+        conn.commit()
+        cur.close()
+        conn.close()
 
     return redirect('/settings')
 
+
 @app.route('/delete_category/<cat_name>')
 def delete_category(cat_name):
-    if 'user_key' not in session: return redirect('/login')
-    user_key = session['user_key']
-    key_name = f"{user_key}_categories"
+    if 'user_key' not in session:
+        return redirect('/login')
 
-    live_data = get_settings()
-    existing_cats = live_data.get(key_name, "")
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("DELETE FROM categories WHERE name = %s", (cat_name,))
+    conn.commit()
 
-    # Bersihkan spasi dan pecah string menjadi list
-    cat_list = [c.strip() for c in existing_cats.split(',') if c.strip()]
+    cur.close()
+    conn.close()
 
-    if cat_name in cat_list:
-        cat_list.remove(cat_name)
-        # Gabungkan kembali jadi string untuk disimpan
-        new_cat_string = ", ".join(cat_list)
-        update_setting(key_name, new_cat_string)
-        flash(f"Kategori {cat_name} dihapus!", "success")
+    return redirect('/settings')
+
+
+@app.route('/edit_category', methods=['POST'])
+def edit_category():
+    if 'user_key' not in session:
+        return redirect('/login')
+
+    old = request.form.get('old_name')
+    new = request.form.get('new_name')
+
+    if old and new:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        cur.execute("UPDATE categories SET name=%s WHERE name=%s", (new, old))
+        conn.commit()
+        cur.close()
+        conn.close()
 
     return redirect('/settings')
 
 @app.route('/update_profile', methods=['POST'])
 def update_profile():
-    if 'user_key' not in session: return redirect('/login')
+    if 'user_key' not in session:
+        return redirect('/login')
 
-    user_key = session['user_key'] # Ambil key (misal: 'silviapasya')
+    user_key = session['user_key']
     user = USERS[user_key]
 
-    # 1. Ambil data dari form
     new_name = request.form.get('name')
-    new_username = request.form.get('new_username')
-    new_pin = request.form.get('new_pin')
     old_pin = request.form.get('old_pin')
+    new_pin = request.form.get('new_pin')
 
-    # 2. Update Nama di Sheets (Gunakan key unik per user agar tidak tertukar)
+    # =====================
+    # UPDATE NAME
+    # =====================
     if new_name:
         user['name'] = new_name
-        update_setting(f"{user_key}_name", new_name)
 
-    # 3. Logika Update PIN (Masih lokal, tapi bisa kamu tambah ke Sheets nanti)
+    # =====================
+    # UPDATE PIN (LOCAL)
+    # =====================
     if new_pin:
         if old_pin != user['pin']:
-            flash("PIN Lama Salah!", "error")
+            flash("PIN lama salah", "error")
             return redirect('/settings')
         user['pin'] = new_pin
-        update_setting(f"{user_key}_pin", new_pin)
 
-    # 4. Update Foto Profil ke Sheets
+    # =====================
+    # UPLOAD AVATAR
+    # =====================
     if 'avatar' in request.files:
         file = request.files['avatar']
-        if file.filename != '':
+        if file and file.filename:
             filename = secure_filename(file.filename)
-            # Simpan file fisik ke folder /uploads (untuk sementara)
-            file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
 
-            # Simpan NAMA FILE ke Google Sheets agar bisa dipanggil lagi nanti
+            upload_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            file.save(upload_path)
+
             user['avatar_file'] = filename
-            update_setting(f"{user_key}_avatar", filename)
 
-    flash("Profil berhasil disimpan ke Cloud Sheets!", "success")
+    flash("Profil berhasil diperbarui", "success")
     return redirect('/settings')
 
-@app.route('/update_categories', methods=['POST'])
-def update_categories():
-    new_cats = request.form.get('categories') # Misalnya user input string dipisahkan koma
-    if update_setting('categories', new_cats):
-        return redirect(url_for('me'))
-    return "Gagal update", 400
-@app.route('/edit_category', methods=['POST'])
-def edit_category():
-    if 'user_key' not in session: return redirect('/login')
-    user_key = session['user_key']
-    old_cat = request.form.get('old_name')
-    new_cat = request.form.get('new_name')
 
-    if old_cat and new_cat:
-        key_name = f"{user_key}_categories"
-        live_data = get_settings()
-        existing_cats = live_data.get(key_name, "")
-
-        # Pecah string jadi list, ganti namanya, lalu gabung lagi
-        cat_list = [c.strip() for c in existing_cats.split(',') if c.strip()]
-        if old_cat in cat_list:
-            idx = cat_list.index(old_cat)
-            cat_list[idx] = new_cat
-
-            new_cat_string = ", ".join(cat_list)
-            update_setting(key_name, new_cat_string)
-            flash(f"Kategori '{old_cat}' diubah menjadi '{new_cat}'", "success")
-
-    return redirect('/settings')
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))

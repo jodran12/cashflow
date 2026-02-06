@@ -1,0 +1,18 @@
+# Virtual environment
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Runtime / temporary
+uploads/
+nohup.out
+
+# Backup / junk files
+*.save
+*.bak
+
+# Secrets (kalau nanti ada)
+.env
+credentials.json
